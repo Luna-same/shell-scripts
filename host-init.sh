@@ -70,11 +70,21 @@ svc_enable() { local s="$1"; if [[ "$USE_SYSTEMD" == "true" ]]; then systemctl e
 
 # ==============================================================================
 # 3. 交互逻辑
+# 修复：在 set -e 模式下，必须使用 if 结构，
+# 否则 [[ -z "$VAR" ]] 返回 false 时会导致脚本立即退出。
 
 # 3.1 主机名
-[[ -z "$CFG_HOSTNAME" ]] && { read -p "🖥️  主机名 (留空跳过): " v; CFG_HOSTNAME="$v"; }
+if [[ -z "$CFG_HOSTNAME" ]]; then
+    read -p "🖥️  主机名 (留空跳过): " v
+    CFG_HOSTNAME="$v"
+fi
+
 # 3.2 SSH端口
-[[ -z "$CFG_SSH_PORT" ]] && { read -p "🔒 SSH端口 (默认22): " v; CFG_SSH_PORT="${v:-22}"; }
+if [[ -z "$CFG_SSH_PORT" ]]; then
+    read -p "🔒 SSH端口 (默认22): " v
+    CFG_SSH_PORT="${v:-22}"
+fi
+
 # 3.3 Swap
 if [[ -z "$CFG_SWAP_SIZE" ]]; then
   if swapon --summary | grep -q .; then
@@ -83,8 +93,16 @@ if [[ -z "$CFG_SWAP_SIZE" ]]; then
     read -p "💾 创建Swap? (GB，留空跳过): " CFG_SWAP_SIZE
   fi
 fi
+
 # 3.4 Git
-[[ -z "$CFG_GIT_NAME" ]] && { echo "🔧 Git配置 (留空跳过):"; read -p "   -> Name: " CFG_GIT_NAME; [[ -n "$CFG_GIT_NAME" ]] && read -p "   -> Email: " CFG_GIT_EMAIL; }
+if [[ -z "$CFG_GIT_NAME" ]]; then
+    echo "🔧 Git配置 (留空跳过):"
+    read -p "   -> Name: " CFG_GIT_NAME
+    if [[ -n "$CFG_GIT_NAME" ]]; then
+        read -p "   -> Email: " CFG_GIT_EMAIL
+    fi
+fi
+
 # 3.5 Zsh
 if [[ -z "$CFG_INSTALL_ZSH" ]]; then
   read -p "🐚 安装 Zsh? (y/N): " -n 1 -r; echo
@@ -94,16 +112,19 @@ if [[ -z "$CFG_INSTALL_ZSH" ]]; then
     [[ $REPLY =~ ^[Yy]$ ]] && CFG_ZSH_DEFAULT="true" || CFG_ZSH_DEFAULT="false"
   fi
 fi
+
 # 3.6 Fail2Ban
 if [[ -z "$CFG_INSTALL_FAIL2BAN" ]]; then
   read -p "🛡️ 安装 Fail2Ban? (y/N): " -n 1 -r; echo
   [[ $REPLY =~ ^[Yy]$ ]] && CFG_INSTALL_FAIL2BAN="true" || CFG_INSTALL_FAIL2BAN="false"
 fi
+
 # 3.7 Docker
 if [[ -z "$CFG_INSTALL_DOCKER" ]]; then
   read -p "🐳 安装 Docker? (y/N): " -n 1 -r; echo
   [[ $REPLY =~ ^[Yy]$ ]] && CFG_INSTALL_DOCKER="true" || CFG_INSTALL_DOCKER="false"
 fi
+
 # 3.8 SSH Key
 if [[ -z "$CFG_SSH_PUBKEY" ]]; then
   read -p "🔑 导入 SSH 公钥? (y/N): " -n 1 -r; echo
