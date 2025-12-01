@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# set -euo pipefail
+set -euo pipefail
 
 CFG_HOSTNAME=""
 CFG_SSH_PORT=""
