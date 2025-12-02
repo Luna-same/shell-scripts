@@ -540,8 +540,7 @@ if command -v fail2ban-client >/dev/null 2>&1; then
 fi
 echo "🔎 Fail2Ban[sshd]: $F2B_SSH_SUMMARY"
 echo "------------------------------------------"
-echo "💡 提示: 如果修改了 SSH 端口，请确保防火墙已放行。"
-echo "=========================================="
+echo "💡 提示: SSH 端口已修改为 ${CFG_SSH_PORT:-22}，请确保防火墙已放行。"
 
 # 收尾提示：根据当前默认 shell 提示刷新方式
 DEFAULT_SHELL="$(getent passwd root | cut -d: -f7 2>/dev/null || echo /bin/sh)"
@@ -550,7 +549,7 @@ if [[ "${DEFAULT_SHELL##*/}" == "zsh" ]]; then
   if [[ "$CUR_SHELL_NAME" == "zsh" ]]; then
     echo "🔁 建议执行: source ~/.zshrc"
   else
-    echo "🔁 建议执行: exec zsh 或重新连接以加载新配置"
+    echo "🔁 建议执行: 重新连接以加载新配置"
   fi
 else
   echo "🔁 建议执行: source ~/.bashrc 或重新连接以加载新配置"
