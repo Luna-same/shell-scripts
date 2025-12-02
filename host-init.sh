@@ -148,26 +148,31 @@ echo -e "\n🚀 开始执行任务..."
 
 # 4.1 安装基础依赖 + 对齐 SSH 版本 (核心修改)
 echo "--> [1/7] 更新源并同步基础软件..."
-$CMD_UPDATE || echo "⚠️ 源更新轻微报错，尝试继续..."
-
-# RHEL EPEL
+PKGS=""
+for p in curl git tar tree htop; do
+  command -v "$p" >/dev/null 2>&1 || PKGS="$PKGS $p"
+done
+command -v sshd >/dev/null 2>&1 || PKGS="$PKGS $SSH_PKG"
 [[ "$OS_TYPE" == "rhel" ]] && ! rpm -q epel-release >/dev/null 2>&1 && $CMD_INSTALL epel-release
-
-# 🚨 核心逻辑: 
-if [[ "$OS_TYPE" == "debian" ]]; then
-    if apt-get install -y --only-upgrade curl git tar tree htop $SSH_PKG || apt-get install -y curl git tar tree htop $SSH_PKG; then
-        echo "   -> 基础软件安装及 SSH 依赖对齐完成"
-    else
-        echo "❌ 基础软件安装失败，脚本退出以保护环境。"
-        exit 1
-    fi
+if [[ -n "$PKGS" ]]; then
+  $CMD_UPDATE || echo "⚠️ 源更新轻微报错，尝试继续..."
+  if [[ "$OS_TYPE" == "debian" ]]; then
+      if apt-get install -y $PKGS; then
+          echo "   -> 基础软件安装及 SSH 依赖对齐完成"
+      else
+          echo "❌ 基础软件安装失败，脚本退出以保护环境。"
+          exit 1
+      fi
+  else
+      if $CMD_INSTALL $PKGS; then
+          echo "   -> 基础软件安装及 SSH 依赖对齐完成"
+      else
+          echo "❌ 基础软件安装失败，脚本退出以保护环境。"
+          exit 1
+      fi
+  fi
 else
-    if $CMD_INSTALL curl git tar tree htop $SSH_PKG; then
-        echo "   -> 基础软件安装及 SSH 依赖对齐完成"
-    else
-        echo "❌ 基础软件安装失败，脚本退出以保护环境。"
-        exit 1
-    fi
+  echo "   -> 基础软件已满足，无需下载"
 fi
 
 # 4.2 网络检测 (Curl已就绪)
@@ -185,7 +190,11 @@ fi
 # 4.3 Fail2Ban
 if [[ "$CFG_INSTALL_FAIL2BAN" == "true" ]]; then
   echo "--> [2/7] 安装 Fail2Ban..."
-  $CMD_INSTALL fail2ban && STATUS_FAIL2BAN="已安装" || STATUS_FAIL2BAN="失败"
+  if command -v fail2ban-server >/dev/null 2>&1; then
+    STATUS_FAIL2BAN="已安装"
+  else
+    $CMD_INSTALL fail2ban && STATUS_FAIL2BAN="已安装" || STATUS_FAIL2BAN="失败"
+  fi
 fi
 
 # 4.4 Git Config
@@ -244,28 +253,30 @@ EOF
     echo "   -> SSH 服务已重启 (Port: $CFG_SSH_PORT)"
     if [[ "$STATUS_FAIL2BAN" == "已安装" ]]; then
         mkdir -p /etc/fail2ban/jail.d
-        F2B_BACKEND=""
-        F2B_LOGPATH=""
-        if [[ "$USE_SYSTEMD" == "true" ]]; then
-          F2B_BACKEND="systemd"
-        else
-          if [[ "$OS_TYPE" == "debian" ]]; then
-            F2B_LOGPATH="/var/log/auth.log"
-          elif [[ "$OS_TYPE" == "rhel" ]]; then
-            F2B_LOGPATH="/var/log/secure"
+        if [[ ! -f /etc/fail2ban/jail.d/sshd.local ]]; then
+          F2B_BACKEND=""
+          F2B_LOGPATH=""
+          if [[ "$USE_SYSTEMD" == "true" ]]; then
+            F2B_BACKEND="systemd"
           else
-            F2B_LOGPATH="/var/log/auth.log"
+            if [[ "$OS_TYPE" == "debian" ]]; then
+              F2B_LOGPATH="/var/log/auth.log"
+            elif [[ "$OS_TYPE" == "rhel" ]]; then
+              F2B_LOGPATH="/var/log/secure"
+            else
+              F2B_LOGPATH="/var/log/auth.log"
+            fi
           fi
-        fi
-        cat > /etc/fail2ban/jail.d/sshd.local <<EOF
+          cat > /etc/fail2ban/jail.d/sshd.local <<EOF
 [sshd]
 enabled = true
 port = $CFG_SSH_PORT
 maxretry = 3
 bantime = 1h
 EOF
-        [[ -n "$F2B_BACKEND" ]] && echo "backend = $F2B_BACKEND" >> /etc/fail2ban/jail.d/sshd.local
-        [[ -n "$F2B_LOGPATH" ]] && echo "logpath = $F2B_LOGPATH" >> /etc/fail2ban/jail.d/sshd.local
+          [[ -n "$F2B_BACKEND" ]] && echo "backend = $F2B_BACKEND" >> /etc/fail2ban/jail.d/sshd.local
+          [[ -n "$F2B_LOGPATH" ]] && echo "logpath = $F2B_LOGPATH" >> /etc/fail2ban/jail.d/sshd.local
+        fi
         svc_enable "fail2ban"
         svc_restart "fail2ban"
     fi
@@ -316,12 +327,16 @@ fi
 # 4.9 Zsh
 echo "--> [6/7] 安装 Zsh..."
 if [[ "$CFG_INSTALL_ZSH" == "true" ]]; then
-  if [[ "$OS_TYPE" == "debian" ]]; then
-    if apt-get install -y zsh; then STATUS_ZSH="已安装"; else STATUS_ZSH="失败"; fi
-  elif [[ "$OS_TYPE" == "rhel" ]]; then
-    if { command -v dnf >/dev/null 2>&1 && dnf install -y zsh; } || { command -v yum >/dev/null 2>&1 && yum install -y zsh; }; then STATUS_ZSH="已安装"; else STATUS_ZSH="失败"; fi
-  elif [[ "$OS_TYPE" == "alpine" ]]; then
-    if apk add zsh; then STATUS_ZSH="已安装"; else STATUS_ZSH="失败"; fi
+  if command -v zsh >/dev/null 2>&1; then
+    STATUS_ZSH="已安装"
+  else
+    if [[ "$OS_TYPE" == "debian" ]]; then
+      if apt-get install -y zsh; then STATUS_ZSH="已安装"; else STATUS_ZSH="失败"; fi
+    elif [[ "$OS_TYPE" == "rhel" ]]; then
+      if { command -v dnf >/dev/null 2>&1 && dnf install -y zsh; } || { command -v yum >/dev/null 2>&1 && yum install -y zsh; }; then STATUS_ZSH="已安装"; else STATUS_ZSH="失败"; fi
+    elif [[ "$OS_TYPE" == "alpine" ]]; then
+      if apk add zsh; then STATUS_ZSH="已安装"; else STATUS_ZSH="失败"; fi
+    fi
   fi
   [[ ! -f /root/.zshrc ]] && touch /root/.zshrc
   if [[ "$STATUS_ZSH" == "已安装" && "$CFG_ZSH_DEFAULT" == "true" ]]; then
@@ -329,10 +344,15 @@ if [[ "$CFG_INSTALL_ZSH" == "true" ]]; then
           ZSHELL="$(command -v zsh)"
           [[ -f /etc/shells ]] || touch /etc/shells
           grep -Fxq "$ZSHELL" /etc/shells || echo "$ZSHELL" >> /etc/shells
-          if command -v chsh >/dev/null 2>&1; then
-              chsh -s "$ZSHELL" root && STATUS_ZSH="已安装(默认)"
-          elif command -v usermod >/dev/null 2>&1; then
-              usermod -s "$ZSHELL" root && STATUS_ZSH="已安装(默认)"
+          CURRENT_SHELL="$(getent passwd root | cut -d: -f7 2>/dev/null || echo /bin/sh)"
+          if [[ "$CURRENT_SHELL" != "$ZSHELL" && "${CURRENT_SHELL##*/}" != "zsh" ]]; then
+            if command -v chsh >/dev/null 2>&1; then
+                chsh -s "$ZSHELL" root && STATUS_ZSH="已安装(默认)"
+            elif command -v usermod >/dev/null 2>&1; then
+                usermod -s "$ZSHELL" root && STATUS_ZSH="已安装(默认)"
+            fi
+          else
+            STATUS_ZSH="已安装(默认)"
           fi
       fi
   fi
@@ -351,36 +371,58 @@ if [[ "$OS_TYPE" == "rhel" ]]; then
 fi
 
 if [[ "$SKIP_NEOVIM" == "false" ]]; then
-  ARCH=$(uname -m)
-  case "$ARCH" in x86_64) NV_FILE="nvim-linux-x86_64.tar.gz" ;; aarch64) NV_FILE="nvim-linux-arm64.tar.gz" ;; *) NV_FILE="" ;; esac
-  if [[ -n "$NV_FILE" ]]; then
-    cd /tmp
-    if curl -LO --retry 3 --connect-timeout 15 "https://github.com/neovim/neovim/releases/latest/download/$NV_FILE"; then
-      mkdir -p /opt
-      tar -C /opt -xzf "$NV_FILE" || true
-      NV_DIR=$(tar -tf "$NV_FILE" 2>/dev/null | head -1 | cut -f1 -d"/")
-      if [[ -n "$NV_DIR" && -d "/opt/$NV_DIR" ]]; then
-        for rc in "/root/.bashrc" "/root/.zshrc"; do
-          [[ -f "$rc" ]] || touch "$rc"
-          grep -Fq "/opt/$NV_DIR/bin" "$rc" || echo "export PATH=\"\$PATH:/opt/$NV_DIR/bin\"" >> "$rc"
-        done
-        STATUS_NVIM="已安装"
-        [[ ! -d /root/.config/nvim ]] && git clone https://github.com/LazyVim/starter /root/.config/nvim >/dev/null 2>&1
-      else STATUS_NVIM="解压失败"; fi
-    else STATUS_NVIM="下载失败"; fi
-  else STATUS_NVIM="架构不支持"; fi
+  if command -v nvim >/dev/null 2>&1; then
+    STATUS_NVIM="已安装"
+  else
+    ARCH=$(uname -m)
+    case "$ARCH" in x86_64) NV_FILE="nvim-linux-x86_64.tar.gz" ;; aarch64) NV_FILE="nvim-linux-arm64.tar.gz" ;; *) NV_FILE="" ;; esac
+    if [[ -n "$NV_FILE" ]]; then
+      cd /tmp
+      if curl -LO --retry 3 --connect-timeout 15 "https://github.com/neovim/neovim/releases/latest/download/$NV_FILE"; then
+        mkdir -p /opt
+        if tar -C /opt -xzf "$NV_FILE"; then
+          if NV_DIR=$(tar -tf "$NV_FILE" 2>/dev/null | head -1 | cut -f1 -d"/"); then
+            if [[ -n "$NV_DIR" && -d "/opt/$NV_DIR" ]]; then
+              for rc in "/root/.bashrc" "/root/.zshrc"; do
+                [[ -f "$rc" ]] || touch "$rc"
+                grep -Fq "/opt/$NV_DIR/bin" "$rc" || echo "export PATH=\"\$PATH:/opt/$NV_DIR/bin\"" >> "$rc"
+              done
+              STATUS_NVIM="已安装"
+              if [[ ! -d /root/.config/nvim ]]; then
+                git clone https://github.com/LazyVim/starter /root/.config/nvim >/dev/null 2>&1 || true
+              fi
+            else
+              STATUS_NVIM="解压失败"
+            fi
+          else
+            STATUS_NVIM="解压失败"
+          fi
+        else
+          STATUS_NVIM="解压失败"
+        fi
+      else
+        STATUS_NVIM="下载失败"
+      fi
+    else
+      STATUS_NVIM="架构不支持"
+    fi
+  fi
 fi
 
  
 
 # 4.11 Docker
 if [[ "$CFG_INSTALL_DOCKER" == "true" ]]; then
-  DOCKER_URL="https://get.docker.com"
-  [[ "$CFG_USE_ALIYUN" == "true" ]] && DOCKER_URL="https://gitee.com/luna_sama/shell-scripts/raw/main/install-docker.sh"
-  if curl -fsSL "$DOCKER_URL" | bash; then
-      STATUS_DOCKER="已安装"
+  if command -v docker >/dev/null 2>&1; then
+    STATUS_DOCKER="已安装"
   else
-      STATUS_DOCKER="失败"
+    DOCKER_URL="https://get.docker.com"
+    [[ "$CFG_USE_ALIYUN" == "true" ]] && DOCKER_URL="https://gitee.com/luna_sama/shell-scripts/raw/main/install-docker.sh"
+    if curl -fsSL "$DOCKER_URL" | bash; then
+        STATUS_DOCKER="已安装"
+    else
+        STATUS_DOCKER="失败"
+    fi
   fi
 fi
 
