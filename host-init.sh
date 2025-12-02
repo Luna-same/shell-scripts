@@ -7,6 +7,7 @@ CFG_INSTALL_ZSH=""
 CFG_ZSH_DEFAULT=""       
 CFG_INSTALL_FAIL2BAN=""  
 CFG_INSTALL_DOCKER=""    
+CFG_DOCKER_MIRROR=""
 CFG_SWAP_SIZE=""         
 CFG_SSH_PUBKEY=""
 CFG_GIT_NAME=""
@@ -14,6 +15,7 @@ CFG_GIT_EMAIL=""
 
 STATUS_NVIM="未安装"
 STATUS_DOCKER="未安装"
+STATUS_VIM="未安装"
 STATUS_ZSH="未安装"
 STATUS_FAIL2BAN="未安装"
 
@@ -390,7 +392,7 @@ if [[ "$SKIP_NEOVIM" == "false" ]]; then
     case "$ARCH" in x86_64) NV_FILE="nvim-linux-x86_64.tar.gz" ;; aarch64) NV_FILE="nvim-linux-arm64.tar.gz" ;; *) NV_FILE="" ;; esac
     if [[ -n "$NV_FILE" ]]; then
       cd /tmp
-      if curl -LO --retry 3 --connect-timeout 15 "https://github.com/neovim/neovim/releases/latest/download/$NV_FILE"; then
+      if curl -LO --retry 3 --connect-timeout 15 "https://github.com/neovim/neovim/releases/download/nightly/$NV_FILE"; then
         mkdir -p /opt
         if tar -C /opt -xzf "$NV_FILE"; then
           if NV_DIR=$(tar -tf "$NV_FILE" 2>/dev/null | head -1 | cut -f1 -d"/"); then
@@ -421,6 +423,20 @@ if [[ "$SKIP_NEOVIM" == "false" ]]; then
   fi
 fi
 
+echo "--> 安装 Vim(备用)..."
+if command -v vim >/dev/null 2>&1; then
+  STATUS_VIM="已安装"
+else
+  if [[ "$OS_TYPE" == "debian" ]]; then
+    apt-get install -y vim && STATUS_VIM="已安装" || STATUS_VIM="失败"
+  elif [[ "$OS_TYPE" == "rhel" ]]; then
+    { command -v dnf >/dev/null 2>&1 && dnf install -y vim; } || { command -v yum >/dev/null 2>&1 && yum install -y vim; }
+    if command -v vim >/dev/null 2>&1; then STATUS_VIM="已安装"; else STATUS_VIM="失败"; fi
+  elif [[ "$OS_TYPE" == "alpine" ]]; then
+    apk add vim && STATUS_VIM="已安装" || STATUS_VIM="失败"
+  fi
+fi
+
  
 
 # 4.11 Docker
@@ -438,6 +454,32 @@ if [[ "$CFG_INSTALL_DOCKER" == "true" ]]; then
   fi
 fi
 
+if [[ "$CFG_INSTALL_DOCKER" == "true" && "$STATUS_DOCKER" == "已安装" ]]; then
+  read -p "🚀 配置 Docker 镜像加速? (y/N): " -n 1 -r; echo
+  if [[ $REPLY =~ ^[Yy]$ ]]; then
+    read -p "   -> 加速源地址 (默认 https://docker.1ms.run): " v
+    CFG_DOCKER_MIRROR="${v:-https://docker.1ms.run}"
+    DAEMON_JSON="/etc/docker/daemon.json"
+    mkdir -p /etc/docker
+    if command -v jq >/dev/null 2>&1 && [[ -f "$DAEMON_JSON" ]]; then
+      tmp="$(cat "$DAEMON_JSON")"
+      echo "$tmp" | jq --arg m "$CFG_DOCKER_MIRROR" '.["registry-mirrors"] = ((.["registry-mirrors"] // []) + [$m]) | .["registry-mirrors"] |= unique' > "$DAEMON_JSON.tmp" && mv "$DAEMON_JSON.tmp" "$DAEMON_JSON"
+    else
+      if [[ ! -f "$DAEMON_JSON" ]]; then
+        cat > "$DAEMON_JSON" <<EOF
+{
+  "registry-mirrors": ["$CFG_DOCKER_MIRROR"]
+}
+EOF
+      else
+        grep -Fq "$CFG_DOCKER_MIRROR" "$DAEMON_JSON" || echo "⚠️ 未检测到 jq，未自动合并已存在的 daemon.json，请手动添加镜像源到 registry-mirrors"
+      fi
+    fi
+    svc_enable "docker"
+    svc_restart "docker"
+  fi
+fi
+
 
 echo ""
 echo "=========================================="
@@ -446,8 +488,26 @@ echo "------------------------------------------"
 echo "🖥️  Host : $PRETTY_NAME ($OS_TYPE)"
 echo "🐚 Zsh  : $STATUS_ZSH"
 echo "📝 Nvim : $STATUS_NVIM"
+echo "✏️ Vim  : $STATUS_VIM"
 echo "🐳 Docker: $STATUS_DOCKER"
 echo "🛡️ Fail2Ban: $STATUS_FAIL2BAN"
+F2B_SSH_SUMMARY="未安装"
+if command -v fail2ban-client >/dev/null 2>&1; then
+  if fail2ban-client status >/dev/null 2>&1; then
+    JAILS="$(fail2ban-client status | sed -n 's/.*Jail list: //p')"
+    if echo "$JAILS" | grep -qw sshd; then
+      ST="$(fail2ban-client status sshd 2>/dev/null)"
+      CUR="$(echo "$ST" | sed -n 's/.*Currently banned:\s*//p')"
+      TOT="$(echo "$ST" | sed -n 's/.*Total banned:\s*//p')"
+      F2B_SSH_SUMMARY="启用，当前封禁: ${CUR:-0}, 累计: ${TOT:-0}"
+    else
+      F2B_SSH_SUMMARY="未配置 sshd jail"
+    fi
+  else
+    F2B_SSH_SUMMARY="服务未运行"
+  fi
+fi
+echo "🔎 Fail2Ban[sshd]: $F2B_SSH_SUMMARY"
 echo "------------------------------------------"
 echo "💡 提示: 如果修改了 SSH 端口，请确保防火墙已放行。"
 echo "=========================================="
