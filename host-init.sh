@@ -148,6 +148,18 @@ echo -e "\n🚀 开始执行任务..."
 
 # 4.1 安装基础依赖 + 对齐 SSH 版本 (核心修改)
 echo "--> [1/7] 更新源并同步基础软件..."
+if [[ "$OS_TYPE" == "debian" ]]; then
+  if grep -Eq '^\s*deb\s+cdrom:' /etc/apt/sources.list 2>/dev/null || grep -Rqs '^\s*deb\s+cdrom:' /etc/apt/sources.list.d 2>/dev/null; then
+    sed -i -E 's/^\s*deb\s+cdrom:/# deb cdrom:/g' /etc/apt/sources.list 2>/dev/null || true
+    if [[ -d /etc/apt/sources.list.d ]]; then
+      for f in /etc/apt/sources.list.d/*.list; do
+        [[ -f "$f" ]] || continue
+        sed -i -E 's/^\s*deb\s+cdrom:/# deb cdrom:/g' "$f" || true
+      done
+    fi
+    echo "   -> 已禁用 CDROM 源"
+  fi
+fi
 PKGS=""
 for p in curl git tar tree htop; do
   command -v "$p" >/dev/null 2>&1 || PKGS="$PKGS $p"
