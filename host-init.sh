@@ -82,7 +82,14 @@ fi
 # 3.2 SSH端口
 if [[ -z "$CFG_SSH_PORT" ]]; then
     read -p "🔒 SSH端口 (默认22): " v
-    CFG_SSH_PORT="${v:-22}"
+    if [[ -z "$v" ]]; then
+      CFG_SSH_PORT="22"
+    elif [[ "$v" =~ ^[0-9]+$ ]] && (( v >= 1 && v <= 65535 )); then
+      CFG_SSH_PORT="$v"
+    else
+      echo "   -> 端口无效，使用默认 22"
+      CFG_SSH_PORT="22"
+    fi
 fi
 
 # 3.3 Swap
@@ -167,7 +174,7 @@ fi
 CFG_USE_ALIYUN="false"
 if [[ "$CFG_INSTALL_DOCKER" == "true" ]]; then
   echo "🌐 检测 Docker 网络..."
-  if curl -I -s --connect-timeout 3 --max-time 5 https://www.google.com >/dev/null; then
+  if curl -fsI --connect-timeout 3 --max-time 5 https://get.docker.com >/dev/null; then
     echo "   -> 🚀 国际网络畅通"
   else
     echo "   -> 🐢 国际网络受限，将使用阿里云源"
@@ -196,7 +203,13 @@ if [[ -f "$SSH_CONFIG" ]]; then
   SSH_CONFIG_BAK="${SSH_CONFIG}.bak.$(date +%s)"
   cp "$SSH_CONFIG" "$SSH_CONFIG_BAK"
   mkdir -p /etc/ssh/sshd_config.d
-  grep -q '^Include ' "$SSH_CONFIG" || echo "Include /etc/ssh/sshd_config.d/*.conf" >> "$SSH_CONFIG"
+  HAS_INCLUDE="false"
+  APPENDED_INCLUDE="false"
+  grep -Fq 'Include /etc/ssh/sshd_config.d/*.conf' "$SSH_CONFIG" && HAS_INCLUDE="true"
+  if [[ "$HAS_INCLUDE" != "true" ]]; then
+    echo "Include /etc/ssh/sshd_config.d/*.conf" >> "$SSH_CONFIG"
+    APPENDED_INCLUDE="true"
+  fi
   mkdir -p /root/.ssh && chmod 700 /root/.ssh
   if [[ -n "$CFG_SSH_PUBKEY" ]]; then
     touch /root/.ssh/authorized_keys
@@ -207,6 +220,8 @@ Port $CFG_SSH_PORT
 PubkeyAuthentication yes
 PasswordAuthentication no
 PermitRootLogin prohibit-password
+LoginGraceTime 30s
+MaxAuthTries 3
 EOF
   else
     cat > /etc/ssh/sshd_config.d/host-init.conf <<EOF
@@ -214,16 +229,34 @@ Port $CFG_SSH_PORT
 PubkeyAuthentication yes
 PasswordAuthentication yes
 PermitRootLogin yes
+LoginGraceTime 30s
+MaxAuthTries 3
 EOF
   fi
   if [[ "$OS_TYPE" == "rhel" ]] && command -v restorecon >/dev/null 2>&1; then
     restorecon -R /root/.ssh >/dev/null 2>&1 || true
+    restorecon -R /etc/ssh/sshd_config.d >/dev/null 2>&1 || true
   fi
+  if command -v ssh-keygen >/dev/null 2>&1; then ssh-keygen -A >/dev/null 2>&1 || true; fi
   if sshd -t; then
     svc_restart "$SSH_SERVICE"
+    svc_enable "$SSH_SERVICE"
     echo "   -> SSH 服务已重启 (Port: $CFG_SSH_PORT)"
     if [[ "$STATUS_FAIL2BAN" == "已安装" ]]; then
         mkdir -p /etc/fail2ban/jail.d
+        F2B_BACKEND=""
+        F2B_LOGPATH=""
+        if [[ "$USE_SYSTEMD" == "true" ]]; then
+          F2B_BACKEND="systemd"
+        else
+          if [[ "$OS_TYPE" == "debian" ]]; then
+            F2B_LOGPATH="/var/log/auth.log"
+          elif [[ "$OS_TYPE" == "rhel" ]]; then
+            F2B_LOGPATH="/var/log/secure"
+          else
+            F2B_LOGPATH="/var/log/auth.log"
+          fi
+        fi
         cat > /etc/fail2ban/jail.d/sshd.local <<EOF
 [sshd]
 enabled = true
@@ -231,12 +264,18 @@ port = $CFG_SSH_PORT
 maxretry = 3
 bantime = 1h
 EOF
+        [[ -n "$F2B_BACKEND" ]] && echo "backend = $F2B_BACKEND" >> /etc/fail2ban/jail.d/sshd.local
+        [[ -n "$F2B_LOGPATH" ]] && echo "logpath = $F2B_LOGPATH" >> /etc/fail2ban/jail.d/sshd.local
         svc_enable "fail2ban"
         svc_restart "fail2ban"
     fi
   else
     echo "⚠️ SSH 配置校验失败！已回滚。"
     cp "$SSH_CONFIG_BAK" "$SSH_CONFIG"
+    rm -f /etc/ssh/sshd_config.d/host-init.conf
+    if [[ "$APPENDED_INCLUDE" == "true" ]]; then
+      sed -i '/^Include \/etc\/ssh\/sshd_config\.d\/\*.conf$/d' "$SSH_CONFIG"
+    fi
   fi
 fi
 
@@ -251,14 +290,24 @@ echo "--> [4/7] 配置 Swap (${CFG_SWAP_SIZE}GB)..."
   chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
   grep -q '/swapfile' /etc/fstab || echo "/swapfile none swap sw 0 0" >> /etc/fstab
   sysctl vm.swappiness=10 >/dev/null
-  grep -q 'vm.swappiness' /etc/sysctl.conf || echo "vm.swappiness=10" >> /etc/sysctl.conf
+  if grep -Eq '^\s*vm\.swappiness\s*=' /etc/sysctl.conf; then
+    sed -i -E 's/^\s*vm\.swappiness\s*=.*$/vm.swappiness=10/' /etc/sysctl.conf
+  else
+    echo "vm.swappiness=10" >> /etc/sysctl.conf
+  fi
 fi
 
 # 4.8 BBR
 echo "--> [5/7] 开启 BBR..."
 if sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null | grep -qw bbr || modprobe tcp_bbr >/dev/null 2>&1; then
-  if ! grep -q 'net.core.default_qdisc=fq' /etc/sysctl.conf; then
+  if grep -Eq '^\s*net\.core\.default_qdisc\s*=' /etc/sysctl.conf; then
+    sed -i -E 's/^\s*net\.core\.default_qdisc\s*=.*$/net.core.default_qdisc=fq/' /etc/sysctl.conf
+  else
     echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
+  fi
+  if grep -Eq '^\s*net\.ipv4\.tcp_congestion_control\s*=' /etc/sysctl.conf; then
+    sed -i -E 's/^\s*net\.ipv4\.tcp_congestion_control\s*=.*$/net.ipv4.tcp_congestion_control=bbr/' /etc/sysctl.conf
+  else
     echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
   fi
   sysctl -p >/dev/null
@@ -278,6 +327,8 @@ if [[ "$CFG_INSTALL_ZSH" == "true" ]]; then
   if [[ "$STATUS_ZSH" == "已安装" && "$CFG_ZSH_DEFAULT" == "true" ]]; then
       if command -v zsh >/dev/null 2>&1; then
           ZSHELL="$(command -v zsh)"
+          [[ -f /etc/shells ]] || touch /etc/shells
+          grep -Fxq "$ZSHELL" /etc/shells || echo "$ZSHELL" >> /etc/shells
           if command -v chsh >/dev/null 2>&1; then
               chsh -s "$ZSHELL" root && STATUS_ZSH="已安装(默认)"
           elif command -v usermod >/dev/null 2>&1; then
@@ -290,7 +341,14 @@ fi
 # 4.9 Neovim
 echo "--> [7/7] 安装 Neovim..."
 SKIP_NEOVIM=false
-[[ "$OS_TYPE" == "rhel" ]] && grep -E "release 7\." /etc/redhat-release >/dev/null 2>&1 && SKIP_NEOVIM=true
+if [[ "$OS_TYPE" == "rhel" ]]; then
+  RHEL_VER="$(rpm -E %rhel 2>/dev/null || true)"
+  if [[ -n "$RHEL_VER" && "$RHEL_VER" -lt 8 ]]; then
+    SKIP_NEOVIM=true
+  elif grep -E "release 7\." /etc/redhat-release >/dev/null 2>&1; then
+    SKIP_NEOVIM=true
+  fi
+fi
 
 if [[ "$SKIP_NEOVIM" == "false" ]]; then
   ARCH=$(uname -m)
