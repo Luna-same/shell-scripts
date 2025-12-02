@@ -140,7 +140,7 @@ echo -e "\n🚀 开始执行任务..."
 [[ "$OS_TYPE" == "rhel" && -f /etc/yum.repos.d/adoptium.repo ]] && mv /etc/yum.repos.d/adoptium.repo /etc/yum.repos.d/adoptium.repo.bak
 
 # 4.1 安装基础依赖 + 对齐 SSH 版本 (核心修改)
-echo "--> [1/6] 更新源并同步基础软件..."
+echo "--> [1/7] 更新源并同步基础软件..."
 $CMD_UPDATE || echo "⚠️ 源更新轻微报错，尝试继续..."
 
 # RHEL EPEL
@@ -177,7 +177,7 @@ fi
 
 # 4.3 Fail2Ban
 if [[ "$CFG_INSTALL_FAIL2BAN" == "true" ]]; then
-  echo "--> [2/6] 安装 Fail2Ban..."
+  echo "--> [2/7] 安装 Fail2Ban..."
   $CMD_INSTALL fail2ban && STATUS_FAIL2BAN="已安装" || STATUS_FAIL2BAN="失败"
 fi
 
@@ -190,7 +190,7 @@ git config --global color.ui true
 [[ -n "$CFG_HOSTNAME" ]] && { if command -v hostnamectl >/dev/null 2>&1 && [[ "$USE_SYSTEMD" == "true" ]]; then hostnamectl set-hostname "$CFG_HOSTNAME"; else hostname "$CFG_HOSTNAME"; fi; }
 
 # 4.6 SSH Config
-echo "--> [3/6] 配置 SSH..."
+echo "--> [3/7] 配置 SSH..."
 SSH_CONFIG="/etc/ssh/sshd_config"
 if [[ -f "$SSH_CONFIG" ]]; then
   SSH_CONFIG_BAK="${SSH_CONFIG}.bak.$(date +%s)"
@@ -242,7 +242,7 @@ fi
 
 # 4.7 Swap
 if [[ "$CFG_SWAP_SIZE" =~ ^[0-9]+$ ]] && (( CFG_SWAP_SIZE > 0 )); then
-  echo "--> [4/6] 配置 Swap (${CFG_SWAP_SIZE}GB)..."
+echo "--> [4/7] 配置 Swap (${CFG_SWAP_SIZE}GB)..."
   swapoff -a 2>/dev/null || true
   rm -f /swapfile
   if ! fallocate -l "${CFG_SWAP_SIZE}G" /swapfile 2>/dev/null; then
@@ -255,7 +255,7 @@ if [[ "$CFG_SWAP_SIZE" =~ ^[0-9]+$ ]] && (( CFG_SWAP_SIZE > 0 )); then
 fi
 
 # 4.8 BBR
-echo "--> [5/6] 开启 BBR..."
+echo "--> [5/7] 开启 BBR..."
 if sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null | grep -qw bbr || modprobe tcp_bbr >/dev/null 2>&1; then
   if ! grep -q 'net.core.default_qdisc=fq' /etc/sysctl.conf; then
     echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
@@ -264,8 +264,31 @@ if sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null | grep -qw bb
   sysctl -p >/dev/null
 fi
 
+# 4.9 Zsh
+echo "--> [6/7] 安装 Zsh..."
+if [[ "$CFG_INSTALL_ZSH" == "true" ]]; then
+  if [[ "$OS_TYPE" == "debian" ]]; then
+    if apt-get install -y zsh; then STATUS_ZSH="已安装"; else STATUS_ZSH="失败"; fi
+  elif [[ "$OS_TYPE" == "rhel" ]]; then
+    if { command -v dnf >/dev/null 2>&1 && dnf install -y zsh; } || { command -v yum >/dev/null 2>&1 && yum install -y zsh; }; then STATUS_ZSH="已安装"; else STATUS_ZSH="失败"; fi
+  elif [[ "$OS_TYPE" == "alpine" ]]; then
+    if apk add zsh; then STATUS_ZSH="已安装"; else STATUS_ZSH="失败"; fi
+  fi
+  [[ ! -f /root/.zshrc ]] && touch /root/.zshrc
+  if [[ "$STATUS_ZSH" == "已安装" && "$CFG_ZSH_DEFAULT" == "true" ]]; then
+      if command -v zsh >/dev/null 2>&1; then
+          ZSHELL="$(command -v zsh)"
+          if command -v chsh >/dev/null 2>&1; then
+              chsh -s "$ZSHELL" root && STATUS_ZSH="已安装(默认)"
+          elif command -v usermod >/dev/null 2>&1; then
+              usermod -s "$ZSHELL" root && STATUS_ZSH="已安装(默认)"
+          fi
+      fi
+  fi
+fi
+
 # 4.9 Neovim
-echo "--> [6/6] 安装 Neovim..."
+echo "--> [7/7] 安装 Neovim..."
 SKIP_NEOVIM=false
 [[ "$OS_TYPE" == "rhel" ]] && grep -E "release 7\." /etc/redhat-release >/dev/null 2>&1 && SKIP_NEOVIM=true
 
@@ -280,7 +303,8 @@ if [[ "$SKIP_NEOVIM" == "false" ]]; then
       NV_DIR=$(tar -tf "$NV_FILE" 2>/dev/null | head -1 | cut -f1 -d"/")
       if [[ -n "$NV_DIR" && -d "/opt/$NV_DIR" ]]; then
         for rc in "/root/.bashrc" "/root/.zshrc"; do
-          [[ -f "$rc" ]] && ! grep -Fq "/opt/$NV_DIR/bin" "$rc" && echo "export PATH=\"\$PATH:/opt/$NV_DIR/bin\"" >> "$rc"
+          [[ -f "$rc" ]] || touch "$rc"
+          grep -Fq "/opt/$NV_DIR/bin" "$rc" || echo "export PATH=\"\$PATH:/opt/$NV_DIR/bin\"" >> "$rc"
         done
         STATUS_NVIM="已安装"
         [[ ! -d /root/.config/nvim ]] && git clone https://github.com/LazyVim/starter /root/.config/nvim >/dev/null 2>&1
@@ -289,29 +313,20 @@ if [[ "$SKIP_NEOVIM" == "false" ]]; then
   else STATUS_NVIM="架构不支持"; fi
 fi
 
-# 4.10 Zsh
-if [[ "$CFG_INSTALL_ZSH" == "true" ]]; then
-  $CMD_INSTALL zsh && STATUS_ZSH="已安装" || STATUS_ZSH="失败"
-  [[ ! -f /root/.zshrc ]] && touch /root/.zshrc
-  if [[ "$STATUS_ZSH" == "已安装" && "$CFG_ZSH_DEFAULT" == "true" ]]; then
-      chsh -s "$(which zsh)" root && STATUS_ZSH="已安装(默认)"
+ 
+
+# 4.11 Docker
+if [[ "$CFG_INSTALL_DOCKER" == "true" ]]; then
+  DOCKER_URL="https://get.docker.com"
+  [[ "$CFG_USE_ALIYUN" == "true" ]] && DOCKER_URL="https://gitee.com/luna_sama/shell-scripts/raw/main/install-docker.sh"
+  if curl -fsSL "$DOCKER_URL" | bash; then
+      STATUS_DOCKER="已安装"
+  else
+      STATUS_DOCKER="失败"
   fi
 fi
 
-# 4.11 Docker
-  if [[ "$CFG_INSTALL_DOCKER" == "true" ]]; then
-    MIRROR_ARG=""
-    [[ "$CFG_USE_ALIYUN" == "true" ]] && MIRROR_ARG="--mirror Aliyun"
-    if curl -fsSL https://get.docker.com | bash -s docker $MIRROR_ARG; then
-        STATUS_DOCKER="已安装"
-    else
-        STATUS_DOCKER="失败"
-    fi
-  fi
 
-# ==============================================================================
-# 5. 总结
-# ==============================================================================
 echo ""
 echo "=========================================="
 echo "✅ 初始化任务完成"
