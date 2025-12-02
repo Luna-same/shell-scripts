@@ -228,17 +228,23 @@ if [[ -f "$SSH_CONFIG" ]]; then
   mkdir -p /etc/ssh/sshd_config.d
   HAS_INCLUDE="false"
   APPENDED_INCLUDE="false"
-  grep -Fq 'Include /etc/ssh/sshd_config.d/*.conf' "$SSH_CONFIG" && HAS_INCLUDE="true"
-  if [[ "$HAS_INCLUDE" != "true" ]]; then
+  APPENDED_EXPLICIT="false"
+  if grep -Fq 'Include /etc/ssh/sshd_config.d/*.conf' "$SSH_CONFIG"; then
+    HAS_INCLUDE="true"
+  else
     echo "Include /etc/ssh/sshd_config.d/*.conf" >> "$SSH_CONFIG"
     APPENDED_INCLUDE="true"
+  fi
+  if ! grep -Fxq 'Include /etc/ssh/sshd_config.d/99-host-init.conf' "$SSH_CONFIG"; then
+    echo "Include /etc/ssh/sshd_config.d/99-host-init.conf" >> "$SSH_CONFIG"
+    APPENDED_EXPLICIT="true"
   fi
   mkdir -p /root/.ssh && chmod 700 /root/.ssh
   if [[ -n "$CFG_SSH_PUBKEY" ]]; then
     touch /root/.ssh/authorized_keys
-    grep -qxF "$CFG_SSH_PUBKEY" /root/.ssh/authorized_keys || echo "$CFG_SSH_PUBKEY" >> /root/.ssh/authorized_keys
+    if ! grep -qxF "$CFG_SSH_PUBKEY" /root/.ssh/authorized_keys; then echo "$CFG_SSH_PUBKEY" >> /root/.ssh/authorized_keys; fi
     chmod 600 /root/.ssh/authorized_keys
-    cat > /etc/ssh/sshd_config.d/host-init.conf <<EOF
+    cat > /etc/ssh/sshd_config.d/99-host-init.conf <<EOF
 Port $CFG_SSH_PORT
 PubkeyAuthentication yes
 PasswordAuthentication no
@@ -247,7 +253,7 @@ LoginGraceTime 30s
 MaxAuthTries 3
 EOF
   else
-    cat > /etc/ssh/sshd_config.d/host-init.conf <<EOF
+    cat > /etc/ssh/sshd_config.d/99-host-init.conf <<EOF
 Port $CFG_SSH_PORT
 PubkeyAuthentication yes
 PasswordAuthentication yes
@@ -285,7 +291,7 @@ EOF
 [sshd]
 enabled = true
 port = $CFG_SSH_PORT
-maxretry = 3
+maxretry = 8
 bantime = 1h
 EOF
           [[ -n "$F2B_BACKEND" ]] && echo "backend = $F2B_BACKEND" >> /etc/fail2ban/jail.d/sshd.local
@@ -297,9 +303,12 @@ EOF
   else
     echo "⚠️ SSH 配置校验失败！已回滚。"
     cp "$SSH_CONFIG_BAK" "$SSH_CONFIG"
-    rm -f /etc/ssh/sshd_config.d/host-init.conf
+    rm -f /etc/ssh/sshd_config.d/99-host-init.conf
     if [[ "$APPENDED_INCLUDE" == "true" ]]; then
       sed -i '/^Include \/etc\/ssh\/sshd_config\.d\/\*.conf$/d' "$SSH_CONFIG"
+    fi
+    if [[ "$APPENDED_EXPLICIT" == "true" ]]; then
+      sed -i '/^Include \/etc\/ssh\/sshd_config\.d\/99-host-init\.conf$/d' "$SSH_CONFIG"
     fi
   fi
 fi
@@ -313,7 +322,7 @@ echo "--> [4/7] 配置 Swap (${CFG_SWAP_SIZE}GB)..."
     dd if=/dev/zero of=/swapfile bs=1G count="$CFG_SWAP_SIZE" status=progress
   fi
   chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
-  grep -q '/swapfile' /etc/fstab || echo "/swapfile none swap sw 0 0" >> /etc/fstab
+  if ! grep -q '/swapfile' /etc/fstab; then echo "/swapfile none swap sw 0 0" >> /etc/fstab; fi
   sysctl vm.swappiness=10 >/dev/null
   if grep -Eq '^\s*vm\.swappiness\s*=' /etc/sysctl.conf; then
     sed -i -E 's/^\s*vm\.swappiness\s*=.*$/vm.swappiness=10/' /etc/sysctl.conf
@@ -394,12 +403,12 @@ if [[ "$SKIP_NEOVIM" == "false" ]]; then
       cd /tmp
       if curl -LO --retry 3 --connect-timeout 15 "https://github.com/neovim/neovim/releases/download/nightly/$NV_FILE"; then
         mkdir -p /opt
-        if tar -C /opt -xzf "$NV_FILE"; then
+        if tar -C /opt/ -xzf "$NV_FILE"; then
           if NV_DIR=$(tar -tf "$NV_FILE" 2>/dev/null | head -1 | cut -f1 -d"/"); then
             if [[ -n "$NV_DIR" && -d "/opt/$NV_DIR" ]]; then
               for rc in "/root/.bashrc" "/root/.zshrc"; do
                 [[ -f "$rc" ]] || touch "$rc"
-                grep -Fq "/opt/$NV_DIR/bin" "$rc" || echo "export PATH=\"\$PATH:/opt/$NV_DIR/bin\"" >> "$rc"
+                if ! grep -Fq "/opt/$NV_DIR/bin" "$rc"; then echo "export PATH=\"\$PATH:/opt/$NV_DIR/bin\"" >> "$rc"; fi
               done
               STATUS_NVIM="已安装"
               if [[ ! -d /root/.config/nvim ]]; then
@@ -437,6 +446,28 @@ else
   fi
 fi
 
+# alias 注入
+for rc in "/root/.bashrc" "/root/.zshrc"; do
+  [[ -f "$rc" ]] || touch "$rc"
+  if ! grep -Eq '^alias\s+ll=' "$rc"; then
+    {
+      echo 'LS_OPTIONS="--color=auto -F"'
+      echo "alias ls='ls \$LS_OPTIONS'"
+      echo "alias ll='ls \$LS_OPTIONS -l'"
+      echo "alias l='ls \$LS_OPTIONS -lA'"
+      echo "alias rm='rm -i'"
+      echo "alias cp='cp -i'"
+      echo "alias mv='mv -i'"
+    } >> "$rc"
+  fi
+done
+
+# nvim PATH 注入到 .zshrc（tar 安装场景）
+NV_OPT_DIR="$(ls -1d /opt/nvim-* /opt/nvim-linux-* 2>/dev/null | head -1 || true)"
+if [[ -n "$NV_OPT_DIR" && -d "$NV_OPT_DIR/bin" ]]; then
+  if ! grep -Fq "$NV_OPT_DIR/bin" /root/.zshrc; then echo "export PATH=\"\$PATH:$NV_OPT_DIR/bin\"" >> /root/.zshrc; fi
+fi
+
  
 
 # 4.11 Docker
@@ -472,7 +503,7 @@ if [[ "$CFG_INSTALL_DOCKER" == "true" && "$STATUS_DOCKER" == "已安装" ]]; the
 }
 EOF
       else
-        grep -Fq "$CFG_DOCKER_MIRROR" "$DAEMON_JSON" || echo "⚠️ 未检测到 jq，未自动合并已存在的 daemon.json，请手动添加镜像源到 registry-mirrors"
+        if ! grep -Fq "$CFG_DOCKER_MIRROR" "$DAEMON_JSON"; then echo "⚠️ 未检测到 jq，未自动合并已存在的 daemon.json，请手动添加镜像源到 registry-mirrors"; fi
       fi
     fi
     svc_enable "docker"
@@ -511,3 +542,16 @@ echo "🔎 Fail2Ban[sshd]: $F2B_SSH_SUMMARY"
 echo "------------------------------------------"
 echo "💡 提示: 如果修改了 SSH 端口，请确保防火墙已放行。"
 echo "=========================================="
+
+# 收尾提示：根据当前默认 shell 提示刷新方式
+DEFAULT_SHELL="$(getent passwd root | cut -d: -f7 2>/dev/null || echo /bin/sh)"
+CUR_SHELL_NAME="${SHELL##*/}"
+if [[ "${DEFAULT_SHELL##*/}" == "zsh" ]]; then
+  if [[ "$CUR_SHELL_NAME" == "zsh" ]]; then
+    echo "🔁 建议执行: source ~/.zshrc"
+  else
+    echo "🔁 建议执行: exec zsh 或重新连接以加载新配置"
+  fi
+else
+  echo "🔁 建议执行: source ~/.bashrc 或重新连接以加载新配置"
+fi
