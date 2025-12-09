@@ -19,6 +19,8 @@ STATUS_VIM="未安装"
 STATUS_ZSH="未安装"
 STATUS_FAIL2BAN="未安装"
 
+REQUIRED_TOOLS="curl git tar tree htop"
+
 
 # 2. 系统检测
 
@@ -163,7 +165,7 @@ if [[ "$OS_TYPE" == "debian" ]]; then
   fi
 fi
 PKGS=""
-for p in curl git tar tree htop; do
+for p in $REQUIRED_TOOLS; do
   command -v "$p" >/dev/null 2>&1 || PKGS="$PKGS $p"
 done
 command -v sshd >/dev/null 2>&1 || PKGS="$PKGS $SSH_PKG"
@@ -410,17 +412,31 @@ if [[ "$SKIP_NEOVIM" == "false" ]]; then
               [[ -n "$NV_OPT_DIR" ]] && NV_DIR="${NV_OPT_DIR#/opt/}"
             fi
             if [[ -n "$NV_DIR" && -d "/opt/$NV_DIR" ]]; then
-              for rc in "/root/.bashrc" "/root/.zshrc"; do
-                [[ -f "$rc" ]] || touch "$rc"
-                if ! grep -Fq "/opt/$NV_DIR/bin" "$rc"; then echo "export PATH=\"\$PATH:/opt/$NV_DIR/bin\"" >> "$rc"; fi
-              done
               NV_BIN="/opt/$NV_DIR/bin/nvim"
               if [[ -x "$NV_BIN" ]]; then
                 ln -sf "$NV_BIN" /usr/local/bin/nvim >/dev/null 2>&1 || ln -sf "$NV_BIN" /usr/bin/nvim >/dev/null 2>&1 || true
               fi
+              if ! command -v nvim >/dev/null 2>&1; then
+                for rc in "/root/.bashrc" "/root/.zshrc"; do
+                  [[ -f "$rc" ]] || touch "$rc"
+                  if ! grep -Fq "/opt/$NV_DIR/bin" "$rc"; then echo "export PATH=\"\$PATH:/opt/$NV_DIR/bin\"" >> "$rc"; fi
+                done
+              fi
               STATUS_NVIM="已安装"
+              [[ -d /root/.config ]] || mkdir -p /root/.config
               if [[ ! -d /root/.config/nvim ]]; then
-                git clone https://github.com/LazyVim/starter /root/.config/nvim >/dev/null 2>&1 || true
+                echo "   -> 正在从 GitHub 克隆 LazyVim 配置..."
+                # 尝试直连，去掉静默以便调试，或者保留静默但在失败时提示
+                if ! git clone --depth=1 https://github.com/LazyVim/starter /root/.config/nvim >/dev/null 2>&1; then
+                  echo "   -> ⚠️ 直连 GitHub 失败，尝试使用加速镜像..."
+                  # 直接尝试镜像源，不再进行 curl 检测
+                  if ! git clone --depth=1 https://gitclone.com/github.com/LazyVim/starter /root/.config/nvim >/dev/null 2>&1; then
+                    echo "❌ LazyVim 配置下载彻底失败，请手动检查网络或 git 代理。"
+                    # 此时可以选择让 STATUS_NVIM 变为 "配置失败"
+                  else
+                    echo "   -> ✅ 通过镜像源下载成功"
+                  fi
+                fi
               fi
             else
               STATUS_NVIM="解压失败"
@@ -470,15 +486,16 @@ for rc in "/root/.bashrc" "/root/.zshrc"; do
   fi
 done
 
-# nvim PATH 注入到 .zshrc（tar 安装场景）
-NV_OPT_DIR="$(ls -1d /opt/nvim-* /opt/nvim-linux-* 2>/dev/null | head -1 || true)"
-if [[ -n "$NV_OPT_DIR" && -d "$NV_OPT_DIR/bin" ]]; then
-  for rc in "/root/.bashrc" "/root/.zshrc"; do
-    [[ -f "$rc" ]] || touch "$rc"
-    if ! grep -Fq "$NV_OPT_DIR/bin" "$rc"; then echo "export PATH=\"\$PATH:$NV_OPT_DIR/bin\"" >> "$rc"; fi
-  done
-  if [[ -x "$NV_OPT_DIR/bin/nvim" ]]; then
-    ln -sf "$NV_OPT_DIR/bin/nvim" /usr/local/bin/nvim >/dev/null 2>&1 || ln -sf "$NV_OPT_DIR/bin/nvim" /usr/bin/nvim >/dev/null 2>&1 || true
+if ! command -v nvim >/dev/null 2>&1; then
+  NV_OPT_DIR="$(ls -1d /opt/nvim-* /opt/nvim-linux-* 2>/dev/null | head -1 || true)"
+  if [[ -n "$NV_OPT_DIR" && -d "$NV_OPT_DIR/bin" ]]; then
+    for rc in "/root/.bashrc" "/root/.zshrc"; do
+      [[ -f "$rc" ]] || touch "$rc"
+      if ! grep -Fq "$NV_OPT_DIR/bin" "$rc"; then echo "export PATH=\"\$PATH:$NV_OPT_DIR/bin\"" >> "$rc"; fi
+    done
+    if [[ -x "$NV_OPT_DIR/bin/nvim" ]]; then
+      ln -sf "$NV_OPT_DIR/bin/nvim" /usr/local/bin/nvim >/dev/null 2>&1 || ln -sf "$NV_OPT_DIR/bin/nvim" /usr/bin/nvim >/dev/null 2>&1 || true
+    fi
   fi
 fi
 
