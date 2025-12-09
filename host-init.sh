@@ -405,11 +405,19 @@ if [[ "$SKIP_NEOVIM" == "false" ]]; then
         mkdir -p /opt
         if tar -C /opt/ -xzf "$NV_FILE"; then
           if NV_DIR=$(tar -tf "$NV_FILE" 2>/dev/null | head -1 | cut -f1 -d"/"); then
+            if [[ -z "$NV_DIR" ]]; then
+              NV_OPT_DIR="$(ls -1d /opt/nvim-* /opt/nvim-linux-* 2>/dev/null | head -1 || true)"
+              [[ -n "$NV_OPT_DIR" ]] && NV_DIR="${NV_OPT_DIR#/opt/}"
+            fi
             if [[ -n "$NV_DIR" && -d "/opt/$NV_DIR" ]]; then
               for rc in "/root/.bashrc" "/root/.zshrc"; do
                 [[ -f "$rc" ]] || touch "$rc"
                 if ! grep -Fq "/opt/$NV_DIR/bin" "$rc"; then echo "export PATH=\"\$PATH:/opt/$NV_DIR/bin\"" >> "$rc"; fi
               done
+              NV_BIN="/opt/$NV_DIR/bin/nvim"
+              if [[ -x "$NV_BIN" ]]; then
+                ln -sf "$NV_BIN" /usr/local/bin/nvim >/dev/null 2>&1 || ln -sf "$NV_BIN" /usr/bin/nvim >/dev/null 2>&1 || true
+              fi
               STATUS_NVIM="已安装"
               if [[ ! -d /root/.config/nvim ]]; then
                 git clone https://github.com/LazyVim/starter /root/.config/nvim >/dev/null 2>&1 || true
@@ -452,9 +460,9 @@ for rc in "/root/.bashrc" "/root/.zshrc"; do
   if ! grep -Eq '^alias\s+ll=' "$rc"; then
     {
       echo 'LS_OPTIONS="--color=auto -F"'
-      echo "alias ls='ls \$LS_OPTIONS'"
-      echo "alias ll='ls \$LS_OPTIONS -l'"
-      echo "alias l='ls \$LS_OPTIONS -lA'"
+      echo "alias ls='ls --color=auto -F'"
+      echo "alias ll='ls --color=auto -F -l'"
+      echo "alias l='ls --color=auto -F -lA'"
       echo "alias rm='rm -i'"
       echo "alias cp='cp -i'"
       echo "alias mv='mv -i'"
@@ -465,7 +473,13 @@ done
 # nvim PATH 注入到 .zshrc（tar 安装场景）
 NV_OPT_DIR="$(ls -1d /opt/nvim-* /opt/nvim-linux-* 2>/dev/null | head -1 || true)"
 if [[ -n "$NV_OPT_DIR" && -d "$NV_OPT_DIR/bin" ]]; then
-  if ! grep -Fq "$NV_OPT_DIR/bin" /root/.zshrc; then echo "export PATH=\"\$PATH:$NV_OPT_DIR/bin\"" >> /root/.zshrc; fi
+  for rc in "/root/.bashrc" "/root/.zshrc"; do
+    [[ -f "$rc" ]] || touch "$rc"
+    if ! grep -Fq "$NV_OPT_DIR/bin" "$rc"; then echo "export PATH=\"\$PATH:$NV_OPT_DIR/bin\"" >> "$rc"; fi
+  done
+  if [[ -x "$NV_OPT_DIR/bin/nvim" ]]; then
+    ln -sf "$NV_OPT_DIR/bin/nvim" /usr/local/bin/nvim >/dev/null 2>&1 || ln -sf "$NV_OPT_DIR/bin/nvim" /usr/bin/nvim >/dev/null 2>&1 || true
+  fi
 fi
 
  
