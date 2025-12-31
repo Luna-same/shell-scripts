@@ -1,12 +1,3 @@
-
-聊天历史记录
-
-暂无会话历史记录哦～
-
-打开大学搜题酱APP在 「我的」页
-点击「电脑端扫码」
-下载大学搜题酱App
-帮助
 #!/bin/sh
 set -e
 # Docker Engine for Linux installation script.

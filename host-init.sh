@@ -229,8 +229,17 @@ task_shell() {
     if [[ "$CFG_INSTALL_ZSH" == "true" ]]; then
         install_pkgs zsh
         [[ "$CFG_ZSH_DEFAULT" == "true" ]] && chsh -s "$(which zsh)" root
-        # Oh My Zsh 官方脚本目前没有太稳定的国内源，暂保持原样或需额外处理
-        [[ ! -d "/root/.oh-my-zsh" ]] && sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended || true
+        
+        # [修复] 国内环境使用 Gitee 镜像安装 Oh My Zsh
+        if [[ ! -d "/root/.oh-my-zsh" ]]; then
+            if [[ "$CFG_INTERNATIONAL_NETWORK" == "true" ]]; then
+                 sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended || true
+            else
+                 # 使用 Gitee 镜像项目 (这里使用的是社区维护的镜像源，也可以换成你自己的)
+                 sh -c "$(curl -fsSL https://gitee.com/mirrors/oh-my-zsh/raw/master/tools/install.sh)" "" --unattended \
+                 REMOTE=https://gitee.com/mirrors/oh-my-zsh.git || true
+            fi
+        fi
     fi
     
     # --- 2. Neovim 安装逻辑 (二进制 + 配置) ---
@@ -331,19 +340,41 @@ task_docker() {
 task_fail2ban() {
     [[ "$CFG_INSTALL_FAIL2BAN" != "true" ]] && return
     log_info "[6/6] Fail2Ban..."
-    install_pkgs fail2ban
+    
+    # [修复] Debian 12+/Ubuntu 20+ 需要 rsyslog 才能生成 auth.log
+    if [[ "$OS_ID" =~ (debian|ubuntu) ]]; then
+        install_pkgs fail2ban rsyslog
+        systemctl enable --now rsyslog
+    else
+        install_pkgs fail2ban
+    fi
+
     local logpath="/var/log/auth.log"
     [[ "$OS_ID" =~ (rhel|centos|almalinux) ]] && logpath="/var/log/secure"
     
+    # 等待日志文件生成，防止竞争条件
+    if [[ ! -f "$logpath" ]]; then
+        touch "$logpath"
+    fi
+
     cat > /etc/fail2ban/jail.d/sshd.local <<EOF
 [sshd]
 enabled = true
 port = $CFG_SSH_PORT
 logpath = $logpath
+backend = auto
 maxretry = 5
 bantime = 3600
 EOF
-    systemctl enable --now fail2ban; systemctl restart fail2ban
+    systemctl enable --now fail2ban
+    systemctl restart fail2ban
+    
+    # 验证状态
+    if systemctl is-active --quiet fail2ban; then
+        log_success "Fail2Ban 启动成功"
+    else
+        log_error "Fail2Ban 启动失败，请检查 systemctl status fail2ban"
+    fi
 }
 
 bash_pri(){
@@ -356,6 +387,7 @@ bash_pri(){
         curl -LO https://gitee.com/luna_sama/shell-scripts/raw/main/.bashrc
         curl -LO https://gitee.com/luna_sama/shell-scripts/releases/download/completion-alias/complete_alias
     fi;
+    echo "[INFO] bash个人配置文件已加载"
 }
 
 main() {

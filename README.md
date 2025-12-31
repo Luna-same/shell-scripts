@@ -10,6 +10,7 @@ ovh-delivery-monitor.py是一个用于监控ovh服务器上货状态的脚本。
 > 2. 一般的VPS厂商防止邮件轰炸基本上都是关了邮件端口的，qq官方的机器人也是关闭使用了的，所以得使用[Qmsg酱-您的专属QQ消息推送服务小姐姐-qmsg.zendee.cn](https://qmsg.zendee.cn/)推送机器人
 > 3. 注意内容不要违规，或者你也可以自己搭一个私有云机器人
 
+## install-docker.sh
 install-docker.sh脚本是从[docker官方脚本](https://get.docker.com)下载的
 
-nvim必须在国际网络的环境下安装
+## host-init.sh
