@@ -11,7 +11,7 @@ set -o pipefail # 管道错误传递
 # --- [1] 全局定义 ---
 
 # 基础工具包
-CFG_BASE_TOOLS="curl git tar tree htop jq nano wget unzip ca-certificates openssl"
+CFG_BASE_TOOLS="curl git tar tree htop vim jq nano wget unzip ca-certificates openssl bash-completion"
 
 # 交互变量 (留空则询问)
 CFG_HOSTNAME=""
@@ -27,6 +27,7 @@ CFG_INSTALL_FAIL2BAN=""
 CFG_INSTALL_DOCKER=""
 CFG_DOCKER_MIRROR=""
 CFG_SSH_PUBKEY=""
+CFG_INTERNATIONAL_NETWORK=""
 
 # 样式
 readonly C_RESET='\033[0m'
@@ -48,6 +49,19 @@ check_root() {
         exit 1
     fi
 }
+
+check_network() {
+    log_info "正在检测网络环境..."
+
+    if curl -I -s --connect-timeout 3 https://www.google.com >/dev/null; then
+        CFG_INTERNATIONAL_NETWORK="true"
+        log_success "网络环境: 国际互联 (International) - 可直连 Google"
+    else
+        CFG_INTERNATIONAL_NETWORK="false"
+        log_warn "网络环境: 国内/受限 (Mainland China) - 无法连接 Google"
+    fi
+}
+
 
 detect_os() {
     if [[ -f /etc/os-release ]]; then . /etc/os-release; OS_ID="$ID"; else log_error "无法检测 OS"; exit 1; fi
@@ -123,7 +137,6 @@ collect_info() {
     fi
     # TODO docker安装逻辑
     if [[ "$CFG_INSTALL_DOCKER" == "true" && -z "$CFG_DOCKER_MIRROR" ]]; then
-        if curl -I -m 3 -s https://get.docker.com >/dev/null; then echo "   -> 国际网络畅通。"; else echo "   -> 网络可能受限。"; fi
         read -rp "   -> 配置镜像加速? (URL, 留空跳过): " CFG_DOCKER_MIRROR
     fi
 
@@ -211,35 +224,64 @@ task_swap() {
 
 task_shell() {
     log_info "[4/6] Shell 环境..."
+    
+    # --- 1. Zsh 安装逻辑 ---
     if [[ "$CFG_INSTALL_ZSH" == "true" ]]; then
         install_pkgs zsh
         [[ "$CFG_ZSH_DEFAULT" == "true" ]] && chsh -s "$(which zsh)" root
+        # Oh My Zsh 官方脚本目前没有太稳定的国内源，暂保持原样或需额外处理
         [[ ! -d "/root/.oh-my-zsh" ]] && sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended || true
     fi
     
+    # --- 2. Neovim 安装逻辑 (二进制 + 配置) ---
     if ! command -v nvim >/dev/null; then
         log_info "安装 Neovim (Binary)..."
         ARCH=$(uname -m)
-        if [[ "$ARCH" == "x86_64" ]]; then NVIM_FILE="nvim-linux-x86_64.tar.gz"; NVIM_DIR="nvim-linux-x86_64";
-        elif [[ "$ARCH" == "aarch64" ]]; then NVIM_FILE="nvim-linux-arm64.tar.gz"; NVIM_DIR="nvim-linux-arm64";
-        else log_warn "架构不支持"; return; fi
         
+        # 架构判断
+        if [[ "$ARCH" == "x86_64" ]]; then 
+            NVIM_FILE="nvim-linux-x86_64.tar.gz"; NVIM_DIR="nvim-linux-x86_64"
+        elif [[ "$ARCH" == "aarch64" ]]; then 
+            NVIM_FILE="nvim-linux-arm64.tar.gz"; NVIM_DIR="nvim-linux-arm64"
+        else 
+            log_warn "Neovim: 架构不支持 ($ARCH)"; return
+        fi
+        
+        # [核心] 定义下载源 (Binary & Config)
+        local nvim_bin_url=""
+        local lazyvim_git_url=""
+        
+        if [[ "$CFG_INTERNATIONAL_NETWORK" == "true" ]]; then
+            nvim_bin_url="https://github.com/neovim/neovim/releases/latest/download/$NVIM_FILE"
+            lazyvim_git_url="https://github.com/LazyVim/starter"
+        else
+            nvim_bin_url="https://gitee.com/luna_sama/shell-scripts/releases/download/nvim/$NVIM_FILE"
+            lazyvim_git_url="https://gitee.com/luna_sama/starter.git"
+        fi
+        
+        # 下载并安装二进制
         cd /tmp
-        if curl -fLO "https://github.com/neovim/neovim/releases/latest/download/$NVIM_FILE"; then
+        if curl -fL -o "$NVIM_FILE" "$nvim_bin_url"; then
             rm -rf "/opt/$NVIM_DIR"
             if tar -C /opt -xzf "$NVIM_FILE"; then
                 ln -sf "/opt/$NVIM_DIR/bin/nvim" /usr/local/bin/nvim
-                ln -sf "/opt/$NVIM_DIR/bin/nvim" /usr/local/bin/vim
                 log_success "Neovim 安装完毕"
             else
-                log_warn "解压失败"
+                log_warn "Neovim 解压失败"
             fi
+            rm -f "$NVIM_FILE"
         else
-            log_warn "下载失败"
+            log_warn "Neovim 下载失败: $nvim_bin_url"
         fi
         
-        if [[ -x "/usr/local/bin/nvim" && ! -d "/root/.config/nvim" ]]; then
-             git clone --depth=1 https://github.com/LazyVim/starter /root/.config/nvim || log_warn "配置下载失败"
+        # [核心] 下载 LazyVim 配置
+        if [[ -x "/usr/local/bin/nvim" ]]; then
+            if [[ ! -d "/root/.config/nvim" ]]; then
+                log_info "正在克隆 LazyVim 配置..."
+                git clone --depth=1 "$lazyvim_git_url" /root/.config/nvim || log_warn "LazyVim 配置下载失败"
+            else
+                log_warn "检测到 /root/.config/nvim 已存在，跳过配置克隆"
+            fi
         fi
     fi
 }
@@ -247,18 +289,42 @@ task_shell() {
 task_docker() {
     [[ "$CFG_INSTALL_DOCKER" != "true" ]] && return
     log_info "[5/6] Docker..."
-    if ! command -v docker >/dev/null; then curl -fsSL https://get.docker.com | bash; fi
+
+    # 1. 安装逻辑 (区分网络与版本)
+    if ! command -v docker >/dev/null; then
+        local docker_ver="28.5.2"
+        log_info "正在安装 Docker (Target Version: $docker_ver)..."
+        
+        if [[ "$CFG_INTERNATIONAL_NETWORK" == "true" ]]; then
+            # 国际网络：标准安装
+            curl -fsSL https://get.docker.com/ | bash -s -- --version "$docker_ver"
+        else
+            # 国内网络：使用阿里云镜像源加速安装
+            log_info "检测到国内环境，使用 Aliyun 镜像源..."
+            curl -fsSL https://gitee.com/luna_sama/shell-scripts/raw/main/install-docker.sh | bash -s -- --version "$docker_ver"
+        fi
+    else
+        log_warn "Docker 已存在，跳过安装"
+    fi
     
+    # 2. 镜像加速器配置 (Daemon 配置)
+    # 注意：安装源(mirror Aliyun) 和 镜像拉取源(registry-mirrors) 是两回事，这里继续配置拉取源
     if [[ -n "$CFG_DOCKER_MIRROR" ]]; then
         mkdir -p /etc/docker
         local djson="/etc/docker/daemon.json"
+        
+        # 构造配置内容
         if [[ ! -f "$djson" ]]; then
             echo "{\"registry-mirrors\": [\"$CFG_DOCKER_MIRROR\"]}" > "$djson"
         elif command -v jq >/dev/null; then
+            # 使用 jq 安全插入，防止破坏现有配置
             tmp=$(mktemp)
             jq --arg m "$CFG_DOCKER_MIRROR" '.["registry-mirrors"] += [$m] | .["registry-mirrors"] |= unique' "$djson" > "$tmp" && mv "$tmp" "$djson"
         fi
+        
+        systemctl daemon-reload
         systemctl restart docker
+        log_success "Docker 镜像加速器已配置: $CFG_DOCKER_MIRROR"
     fi
 }
 
@@ -283,15 +349,22 @@ EOF
 bash_pri(){
     cd ~
     rm -rf .bashrc
-    curl -sLO https
+    if [[ "$CFG_INTERNATIONAL_NETWORK" == "true" ]]; then
+        curl -LO https://raw.githubusercontent.com/Luna-same/shell-scripts/refs/heads/main/.bashrc
+        curl -LO https://raw.githubusercontent.com/cykerway/complete-alias/master/complete_alias
+    else 
+        curl -LO https://gitee.com/luna_sama/shell-scripts/raw/main/.bashrc
+        curl -LO https://gitee.com/luna_sama/shell-scripts/releases/download/completion-alias/complete_alias
+    fi;
 }
 
 main() {
     check_root
     detect_os
     collect_info
-    
+
     task_base
+    check_network
     task_ssh
     task_swap
     task_shell
