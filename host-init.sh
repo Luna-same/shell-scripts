@@ -98,7 +98,6 @@ install_pkgs() {
 # --- [3] 交互收集模块 ---
 
 collect_info() {
-    clear
     echo -e "${C_GREEN}=== 系统初始化交互向导 ===${C_RESET}"
     echo "提示：按 Enter 键选择默认值或跳过。"
 
@@ -485,6 +484,7 @@ main() {
 
     echo -e "\n${C_GREEN}✅ 初始化完成!${C_RESET}"
     echo "⚠️  SSH 端口: $CFG_SSH_PORT (请检查防火墙)"
+    echo "个人配置文件已更新，请执行source .bashrc"
     [[ "${NVIM_INIT:-0}" == "1" ]] && echo "lazyvim 下载完成，请使用vim或nvim命令加载"
     [[ "$CFG_INSTALL_ZSH" == "true" ]] && echo "🔄 重新登录生效。"
 }
