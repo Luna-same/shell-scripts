@@ -106,8 +106,14 @@ collect_info() {
 
     # 2. SSH 端口
     if [[ -z "$CFG_SSH_PORT" ]]; then
-        read -rp "🔒 SSH端口 (默认 22): " v
-        [[ -z "$v" ]] && CFG_SSH_PORT="22" || CFG_SSH_PORT="$v"
+        local current_port=""
+        
+        if command -v sshd >/dev/null; then
+            current_port=$(sshd -T 2>/dev/null | grep "^port " | awk '{print $2}' | head -n 1)
+        fi
+
+        read -rp "🔒 SSH端口 (默认 ${current_port}): " v
+        [[ -z "$v" ]] && CFG_SSH_PORT="$current_port" || CFG_SSH_PORT="$v"
     fi
 
     # 3. Swap
