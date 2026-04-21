@@ -1,6 +1,11 @@
 本仓库是个人使用的 shell 脚本集合
 
 # 脚本说明
+## host-init.sh
+国外：bash <(curl -sfL https://raw.githubusercontent.com/Luna-same/shell-scripts/refs/heads/main/host-init.sh)
+
+国内：bash <(curl -sfL https://gitee.com/luna_sama/shell-scripts/raw/main/host-init.sh)
+
 ## ovh-delivery-monitor.py
 ovh-delivery-monitor.py是一个用于监控ovh服务器上货状态的脚本。
 

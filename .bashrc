@@ -71,7 +71,7 @@ alias dc='docker compose'
 alias sc='systemctl'
 alias scs='systemctl status'
 alias sca='systemctl start'
-alias vim="nvim"
+alias v="nvim"
 alias kb='kubectl'
 alias ja='journalctl'
 
