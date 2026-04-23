@@ -30,6 +30,7 @@ CFG_INSTALL_FAIL2BAN=""
 CFG_INSTALL_DOCKER=""
 CFG_DOCKER_MIRROR=""
 CFG_SSH_PUBKEY=""
+CFG_SSH_PASSWDLOGIN=""
 CFG_BASHRC_TARGET=""
 
 # 样式
@@ -172,6 +173,8 @@ collect_info() {
     if [[ -z "$CFG_SSH_PUBKEY" ]]; then
         read -rp "🔑 导入 SSH 公钥? (y/N): " -n 1 -r; echo
         [[ $REPLY =~ ^[Yy]$ ]] && { echo "👇 粘贴公钥:"; read -r CFG_SSH_PUBKEY; }
+        read -rp " 是否开启密码登录? 默认no (y/N): " -n 1 -r; echo
+        [[ $REPLY =~ ^[Yy]$ ]] && CFG_SSH_PASSWDLOGIN="yes" || CFG_SSH_PASSWDLOGIN="no"
     fi
     
     echo -e "\n🚀 配置收集完成，开始执行..."
@@ -219,7 +222,7 @@ task_ssh() {
     cat > /etc/ssh/sshd_config.d/99-init.conf <<EOF
 Port $CFG_SSH_PORT
 PubkeyAuthentication yes
-PasswordAuthentication $([[ -n "$CFG_SSH_PUBKEY" ]] && echo "no" || echo "yes")
+PasswordAuthentication $CFG_SSH_PASSWDLOGIN
 PermitRootLogin yes
 EOF
 
@@ -346,11 +349,13 @@ task_fail2ban() {
     cat > /etc/fail2ban/jail.d/sshd.local <<EOF
 [sshd]
 enabled = true
+filter = sshd
 port = $CFG_SSH_PORT
 logpath = $logpath
 backend = auto
 maxretry = 5
-bantime = 3600
+findtime = 18000
+bantime = 86400 
 EOF
     systemctl enable --now fail2ban; systemctl restart fail2ban
 }
