@@ -17,6 +17,7 @@ PKG_INSTALL=""
 SSH_SERVICE=""
 TARGET_USER_1000=""
 CFG_INTERNATIONAL_NETWORK=""
+IS_PVE="false"
 
 # 交互配置变量 (将在 collect_info 中填充)
 CFG_HOSTNAME=""
@@ -27,6 +28,9 @@ CFG_GIT_EMAIL=""
 CFG_INSTALL_ZSH=""
 CFG_ZSH_DEFAULT=""
 CFG_INSTALL_FAIL2BAN=""
+CFG_FAIL2BAN_PVE=""
+CFG_FAIL2BAN_RECIDIVE=""
+CFG_RECIDIVE_BANTIME=""
 CFG_INSTALL_DOCKER=""
 CFG_DOCKER_MIRROR=""
 CFG_SSH_PUBKEY=""
@@ -69,7 +73,14 @@ detect_env() {
         *) log_error "不支持: $OS_ID"; exit 1 ;;
     esac
 
-    # 2. 检测网络 (提前至此处，供后续决策使用)
+    # 2. 检测 PVE 环境 (Proxmox VE)
+    # PVE 的 ID 是 "proxmox"，且通常存在 /etc/pve 目录
+    if [[ "$OS_ID" == "proxmox" ]] || [[ -d /etc/pve ]]; then
+        IS_PVE="true"
+        log_info "检测到 Proxmox VE 环境"
+    fi
+
+    # 3. 检测网络 (提前至此处，供后续决策使用)
     log_info "正在检测网络环境..."
     if curl -I -s --connect-timeout 3 https://www.google.com >/dev/null; then
         CFG_INTERNATIONAL_NETWORK="true"
@@ -79,7 +90,7 @@ detect_env() {
         log_warn "网络环境: 国内/受限 (Mainland China)"
     fi
 
-    # 3. 检测 UID 1000 用户
+    # 4. 检测 UID 1000 用户
     TARGET_USER_1000=$(id -nu 1000 2>/dev/null || true)
 }
 
@@ -108,7 +119,7 @@ collect_info() {
     # 2. SSH 端口
     if [[ -z "$CFG_SSH_PORT" ]]; then
         local current_port=""
-        
+
         if command -v sshd >/dev/null; then
             current_port=$(sshd -T 2>/dev/null | grep "^port " | awk '{print $2}' | head -n 1)
         fi
@@ -160,6 +171,26 @@ collect_info() {
         [[ $REPLY =~ ^[Yy]$ ]] && CFG_INSTALL_FAIL2BAN="true" || CFG_INSTALL_FAIL2BAN="false"
     fi
 
+    # 7.1 PVE 专用配置 (仅在安装 Fail2Ban 时询问)
+    if [[ "$CFG_INSTALL_FAIL2BAN" == "true" ]]; then
+        if [[ "$IS_PVE" == "true" ]]; then
+            echo -e "\n${C_CYAN}检测到 Proxmox VE 环境${C_RESET}"
+            read -rp "🔧 配置 PVE 专用 SSH 过滤规则? (Y/n): " -n 1 -r; echo
+            [[ $REPLY =~ ^[Nn]$ ]] && CFG_FAIL2BAN_PVE="false" || CFG_FAIL2BAN_PVE="true"
+        else
+            CFG_FAIL2BAN_PVE="false"
+        fi
+
+        # 7.2 Recidive 惯犯追踪
+        read -rp "🔁 启用 Recidive 惯犯追踪? (Y/n): " -n 1 -r; echo
+        [[ $REPLY =~ ^[Nn]$ ]] && CFG_FAIL2BAN_RECIDIVE="false" || CFG_FAIL2BAN_RECIDIVE="true"
+
+        if [[ "$CFG_FAIL2BAN_RECIDIVE" == "true" ]]; then
+            read -rp "   -> 惯犯封禁时间-天 (默认7): " v
+            [[ -z "$v" || "$v" -le 0 ]] && CFG_RECIDIVE_BANTIME="604800" || CFG_RECIDIVE_BANTIME=$((v * 86400))
+        fi
+    fi
+
     # 8. Docker
     if [[ -z "$CFG_INSTALL_DOCKER" ]]; then
         read -rp "🐳 安装 Docker? (y/N): " -n 1 -r; echo
@@ -176,14 +207,14 @@ collect_info() {
         read -rp " 是否开启密码登录? 默认no (y/N): " -n 1 -r; echo
         [[ $REPLY =~ ^[Yy]$ ]] && CFG_SSH_PASSWDLOGIN="yes" || CFG_SSH_PASSWDLOGIN="no"
     fi
-    
+
     echo -e "\n🚀 配置收集完成，开始执行..."
 }
 
 # --- [4] 执行模块 ---
 
 task_base() {
-    log_info "[1/6] 基础环境..."
+    log_info "[1/7] 基础环境..."
     [[ "$OS_ID" == "debian" ]] && sed -i '/cdrom:/s/^/#/' /etc/apt/sources.list 2>/dev/null || true
     install_pkgs $CFG_BASE_TOOLS
 
@@ -199,12 +230,12 @@ task_base() {
 }
 
 task_ssh() {
-    log_info "[2/6] SSH 配置..."
+    log_info "[2/7] SSH 配置..."
     [[ "$OS_ID" =~ (debian|ubuntu|rhel|centos|almalinux|rocky) ]] && install_pkgs openssh-server
-    
+
     mkdir -p ~/.ssh && chmod 700 ~/.ssh
     if [[ -n "$CFG_SSH_PUBKEY" ]]; then
-        if ! grep -Fq "$CFG_SSH_PUBKEY" ~/.ssh/authorized_keys; then 
+        if ! grep -Fq "$CFG_SSH_PUBKEY" ~/.ssh/authorized_keys; then
             echo "$CFG_SSH_PUBKEY" >> ~/.ssh/authorized_keys
         fi
         chmod 600 ~/.ssh/authorized_keys
@@ -215,7 +246,7 @@ task_ssh() {
     sed -i -E 's/^#?Port [0-9]+/#&/' "$ssh_conf"
 
     mkdir -p /etc/ssh/sshd_config.d
-    if ! grep -q "^Include /etc/ssh/sshd_config.d/\*.conf" "$ssh_conf"; then 
+    if ! grep -q "^Include /etc/ssh/sshd_config.d/\*.conf" "$ssh_conf"; then
         echo "Include /etc/ssh/sshd_config.d/*.conf" >> "$ssh_conf"
     fi
 
@@ -240,7 +271,7 @@ EOF
 
 task_swap() {
     [[ -z "$CFG_SWAP_SIZE" || "$CFG_SWAP_SIZE" == "0" ]] && return
-    log_info "[3/6] Swap..."
+    log_info "[3/7] Swap..."
     fallocate -l "${CFG_SWAP_SIZE}G" /swapfile || dd if=/dev/zero of=/swapfile bs=1G count="$CFG_SWAP_SIZE"
     chmod 600 /swapfile; mkswap /swapfile; swapon /swapfile
     echo "/swapfile none swap sw 0 0" >> /etc/fstab
@@ -248,13 +279,13 @@ task_swap() {
 }
 
 task_shell() {
-    log_info "[4/6] Shell 环境..."
-    
+    log_info "[4/7] Shell 环境..."
+
     # Zsh
     if [[ "$CFG_INSTALL_ZSH" == "true" ]]; then
         install_pkgs zsh
         [[ "$CFG_ZSH_DEFAULT" == "true" ]] && chsh -s "$(which zsh)" root
-        
+
         if [[ ! -d "~/.oh-my-zsh" ]]; then
             if [[ "$CFG_INTERNATIONAL_NETWORK" == "true" ]]; then
                  sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended || true
@@ -264,21 +295,21 @@ task_shell() {
             fi
         fi
     fi
-    
+
     # Neovim
     if ! command -v nvim >/dev/null; then
         log_info "安装 Neovim (Binary)..."
         local arch; arch=$(uname -m)
         local nvim_file="nvim-linux-x86_64.tar.gz"
         local nvim_dir="nvim-linux-x86_64"
-        
-        if [[ "$arch" == "aarch64" ]]; then 
+
+        if [[ "$arch" == "aarch64" ]]; then
             nvim_file="nvim-linux-arm64.tar.gz"; nvim_dir="nvim-linux-arm64"
         fi
-        
+
         local nvim_bin_url=""
         local lazyvim_git_url=""
-        
+
         if [[ "$CFG_INTERNATIONAL_NETWORK" == "true" ]]; then
             nvim_bin_url="https://github.com/neovim/neovim/releases/latest/download/$nvim_file"
             lazyvim_git_url="https://github.com/LazyVim/starter"
@@ -286,7 +317,7 @@ task_shell() {
             nvim_bin_url="https://gitee.com/luna_sama/shell-scripts/releases/download/nvim/$nvim_file"
             lazyvim_git_url="https://gitee.com/luna_sama/starter.git"
         fi
-        
+
         cd /tmp
         if curl -fL -o "$nvim_file" "$nvim_bin_url"; then
             rm -rf "/opt/$nvim_dir"
@@ -296,7 +327,7 @@ task_shell() {
             fi
             rm -f "$nvim_file"
         fi
-        
+
         if [[ -x "/usr/local/bin/nvim" && ! -d ~/.config/nvim ]]; then
             git clone --depth=1 "$lazyvim_git_url" ~/.config/nvim || true && NVIM_INIT=1
         fi
@@ -305,7 +336,7 @@ task_shell() {
 
 task_docker() {
     [[ "$CFG_INSTALL_DOCKER" != "true" ]] && return
-    log_info "[5/6] Docker..."
+    log_info "[5/7] Docker..."
 
     if ! command -v docker >/dev/null; then
         local docker_ver="28.5.2"
@@ -317,7 +348,7 @@ task_docker() {
     else
         log_warn "Docker 已存在，跳过安装"
     fi
-    
+
     if [[ -n "$CFG_DOCKER_MIRROR" ]]; then
         mkdir -p /etc/docker
         local djson="/etc/docker/daemon.json"
@@ -331,21 +362,78 @@ task_docker() {
     fi
 }
 
+# --- PVE 专用 SSH 过滤规则配置 ---
+_configure_pve_filters() {
+    log_info "配置 PVE 专用 SSH 过滤规则..."
+
+    local filter_dir="/etc/fail2ban/filter.d"
+    local jail_dir="/etc/fail2ban/jail.d"
+
+    # 创建 PVE SSH 过滤器
+    cat > "$filter_dir/pve-sshd.conf" <<EOF
+[Definition]
+failregex = ^.*authentication failure.*rhost=<HOST>
+ignoreregex =
+EOF
+
+    # 配置 SSH 日志路径 - PVE 默认在 daemon.log
+    local ssh_logpath="/var/log/ssh.log"
+    [[ -f /var/log/daemon.log ]] && ssh_logpath="/var/log/daemon.log"
+
+    # 创建 PVE SSH jail 配置
+    cat > "$jail_dir/pve-sshd.local" <<EOF
+[pve-sshd]
+enabled = true
+filter = pve-sshd
+port = $CFG_SSH_PORT
+logpath = $ssh_logpath
+backend = auto
+maxretry = 5
+findtime = 18000
+bantime = 86400
+action = iptables-allports[name=pve-sshd]
+EOF
+
+    log_success "PVE SSH 过滤规则已配置"
+}
+
+# --- Recidive 惯犯追踪配置 ---
+_configure_recidive() {
+    log_info "配置 Recidive 惯犯追踪..."
+
+    local jail_dir="/etc/fail2ban/jail.d"
+    local ban_days=$((CFG_RECIDIVE_BANTIME / 86400))
+
+    cat > "$jail_dir/recidive.local" <<EOF
+[recidive]
+enabled = true
+filter = recidive
+logpath = /var/log/fail2ban.log
+maxretry = 3
+findtime = 86400
+bantime = $CFG_RECIDIVE_BANTIME
+action = iptables-allports[name=recidive]
+EOF
+
+    log_success "Recidive 已配置 (封禁时长: ${ban_days} 天)"
+}
+
 task_fail2ban() {
     [[ "$CFG_INSTALL_FAIL2BAN" != "true" ]] && return
-    log_info "[6/6] Fail2Ban..."
-    
+    log_info "[6/7] Fail2Ban..."
+
     if [[ "$OS_ID" =~ (debian|ubuntu) ]]; then
         install_pkgs fail2ban rsyslog
-        systemctl enable --now rsyslog
+        systemctl enable --now rsyslog 2>/dev/null || true
     else
         install_pkgs fail2ban
     fi
 
-    local logpath="/var/log/auth.log"
+    local logpath="/var/log/ssh.log"
     [[ "$OS_ID" =~ (rhel|centos|almalinux) ]] && logpath="/var/log/secure"
     [[ ! -f "$logpath" ]] && touch "$logpath"
 
+    # 基础 SSH jail 配置
     cat > /etc/fail2ban/jail.d/sshd.local <<EOF
 [sshd]
 enabled = true
@@ -355,9 +443,22 @@ logpath = $logpath
 backend = auto
 maxretry = 5
 findtime = 18000
-bantime = 86400 
+bantime = 86400
 EOF
-    systemctl enable --now fail2ban; systemctl restart fail2ban
+
+    # PVE 专用配置
+    if [[ "$CFG_FAIL2BAN_PVE" == "true" ]]; then
+        _configure_pve_filters
+    fi
+
+    # Recidive 配置
+    if [[ "$CFG_FAIL2BAN_RECIDIVE" == "true" ]]; then
+        _configure_recidive
+    fi
+
+    systemctl enable --now fail2ban 2>/dev/null || true
+    systemctl restart fail2ban
+    log_success "Fail2Ban 服务已启动"
 }
 
 # --- [5] 个人环境配置 ---
@@ -366,23 +467,23 @@ EOF
 _config_user_bashrc() {
     local target_user="$1"
     local target_home="$2"
-    
+
     log_info "正在配置用户环境: $target_user ($target_home)"
 
     local bashrc_url=""
     local alias_url=""
-    
+
     if [[ "$CFG_INTERNATIONAL_NETWORK" == "true" ]]; then
         bashrc_url="https://raw.githubusercontent.com/Luna-same/shell-scripts/refs/heads/main/.bashrc"
         alias_url="https://raw.githubusercontent.com/cykerway/complete-alias/master/complete_alias"
-    else 
+    else
         bashrc_url="https://gitee.com/luna_sama/shell-scripts/raw/main/.bashrc"
         alias_url="https://gitee.com/luna_sama/shell-scripts/releases/download/completion-alias/complete_alias"
     fi
 
     # 清理旧配置
     rm -f "${target_home}/.bashrc"
-    
+
     # 下载文件
     if curl -Lso "${target_home}/.bashrc" "$bashrc_url"; then
         log_success "[$target_user] .bashrc 下载成功"
@@ -404,7 +505,7 @@ _config_user_bashrc() {
 }
 
 bash_pri() {
-    log_info "[Post-Init] 正在应用个人配置..."
+    log_info "[7/7] 个人环境配置..."
 
     # 1. 总是配置 Root
     _config_user_bashrc "root" "/root"
@@ -425,13 +526,13 @@ bash_pri() {
     if [[ -n "$TARGET_USER_1000" ]]; then
         local sudo_group="sudo"
         [[ "$OS_ID" =~ (centos|rhel|almalinux|rocky|fedora|anolis) ]] && sudo_group="wheel"
-        
+
         usermod -aG "$sudo_group" "$TARGET_USER_1000"
-        
+
         local sudo_config="/etc/sudoers.d/99-${TARGET_USER_1000}-nopasswd"
         echo "$TARGET_USER_1000 ALL=(ALL) NOPASSWD: ALL" > "$sudo_config"
         chmod 0440 "$sudo_config"
-        
+
         if visudo -c -f "$sudo_config" >/dev/null; then
             log_success "用户 $TARGET_USER_1000 已配置 Sudo 免密"
         else
@@ -440,9 +541,9 @@ bash_pri() {
         fi
     fi
 
-# 5. 全局动态颜色 (System-wide, 支持非登录 Shell)
+    # 5. 全局动态颜色 (System-wide, 支持非登录 Shell)
     local global_bashrc=""
-    
+
     # 根据发行版判断系统级 bashrc 位置
     if [[ "$OS_ID" =~ (debian|ubuntu|kali|armbian) ]]; then
         global_bashrc="/etc/bash.bashrc"
@@ -481,7 +582,7 @@ EOF
 
 main() {
     check_root
-    detect_env   # 包含 OS 检测、网络检测、用户检测
+    detect_env   # 包含 OS 检测、网络检测、用户检测、PVE检测
     collect_info # 包含所有交互问答
 
     task_base
