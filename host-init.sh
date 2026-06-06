@@ -377,7 +377,7 @@ ignoreregex =
 EOF
 
     # 配置 SSH 日志路径 - PVE 默认在 daemon.log
-    local ssh_logpath="/var/log/ssh.log"
+    local ssh_logpath="/var/log/auth.log"
     [[ -f /var/log/daemon.log ]] && ssh_logpath="/var/log/daemon.log"
 
     # 创建 PVE SSH jail 配置
@@ -429,7 +429,7 @@ task_fail2ban() {
         install_pkgs fail2ban
     fi
 
-    local logpath="/var/log/ssh.log"
+    local logpath="/var/log/auth.log"
     [[ "$OS_ID" =~ (rhel|centos|almalinux) ]] && logpath="/var/log/secure"
     [[ ! -f "$logpath" ]] && touch "$logpath"
 
